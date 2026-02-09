@@ -47,3 +47,11 @@ High-performance orchestration engine for agentic AI and Google Workspace integr
 ### Development
 
 1. **Dependencies**:
+2. **Launch Web Interface**:
+3. **Launch Terminal Interface**:
+
+## Next Steps
+
+* Initialize Go Workspace API client structure in `/cmd/api`.
+
+Determined
