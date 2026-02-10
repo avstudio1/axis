@@ -14,20 +14,6 @@
 
 *.out
 
-# Dependency directories (remove the comment below to include it)
-
-# vendor/
-
-# Next.js
-
-.next/
-out/
-
-# Electron
-
-dist/
-release/
-
 # Environment
 .service-account.json
 .env
@@ -40,3 +26,4 @@ release/
 
 .DS_Store
 Thumbs.db
+axis
