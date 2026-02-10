@@ -33,10 +33,16 @@ func NewServer(ws *workspace.Service) *Server {
 func (s *Server) Start(port string) error {
 	mux := http.NewServeMux()
 
+	// API Routes
 	mux.HandleFunc("/api/notes", s.handleNotes)
 	mux.HandleFunc("/api/notes/delete", s.handleDelete)
 	mux.HandleFunc("/api/mode", s.handleMode)
 	mux.HandleFunc("/api/stream", s.handleStream)
+
+	// Static Asset Mounting
+	// Serves index.html and associated assets from the /web directory
+	fileServer := http.FileServer(http.Dir("web"))
+	mux.Handle("/", fileServer)
 
 	go s.runAutomation()
 
@@ -50,6 +56,7 @@ func (s *Server) handleNotes(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(notes)
 }
 
@@ -79,6 +86,10 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleMode(w http.ResponseWriter, r *http.Request) {
 	newMode := r.URL.Query().Get("set")
+	if newMode != "AUTO" && newMode != "MANUAL" {
+		http.Error(w, "invalid mode", http.StatusBadRequest)
+		return
+	}
 	s.modeMu.Lock()
 	s.mode = newMode
 	s.modeMu.Unlock()
@@ -90,10 +101,17 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "Streaming unsupported", http.StatusInternalServerError)
+		return
+	}
 
 	for msg := range s.eventChan {
 		fmt.Fprintf(w, "data: %s\n\n", msg)
-		w.(http.Flusher).Flush()
+		flusher.Flush()
 	}
 }
 
@@ -101,11 +119,13 @@ func (s *Server) broadcast(msg string) {
 	select {
 	case s.eventChan <- msg:
 	default:
+		// Drop message if buffer is full to prevent blocking
 	}
 }
 
 func (s *Server) runAutomation() {
 	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
 	for range ticker.C {
 		s.modeMu.RLock()
 		active := s.mode == "AUTO"
@@ -113,7 +133,6 @@ func (s *Server) runAutomation() {
 
 		if active {
 			s.broadcast("Cyclical retraction: Monitoring Workspace state...")
-			// Logic for automated state analysis goes here
 		}
 	}
 }
