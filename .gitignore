@@ -32,6 +32,6 @@ Thumbs.db
 node_modules/
 
 # Project specific
-dist/
+web/dist/
 axis
 axis.state.json
