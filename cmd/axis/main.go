@@ -1,7 +1,8 @@
 /*
 File: cmd/axis/main.go
 Description: Entry point for the Axis application. Initializes Google Workspace services
-using service account impersonation and starts the web-based terminal server.
+using service account impersonation and starts the web-based terminal server. Updated
+to use read-only scopes matching Domain-Wide Delegation.
 */
 package main
 
@@ -40,11 +41,12 @@ func main() {
 	log.Printf("Initializing Services for %s via SA %s...", adminEmail, serviceAccountEmail)
 
 	// 3. Create the Token Source with Admin and Keep scopes
+	// Changed AdminDirectoryUserScope to AdminDirectoryUserReadonlyScope to match DWD permissions
 	ts, err := impersonate.CredentialsTokenSource(ctx, impersonate.CredentialsConfig{
 		TargetPrincipal: serviceAccountEmail,
 		Subject:         adminEmail,
 		Scopes: []string{
-			admin.AdminDirectoryUserScope,
+			admin.AdminDirectoryUserReadonlyScope,
 			keep.KeepScope,
 		},
 	})
