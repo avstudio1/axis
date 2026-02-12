@@ -10,6 +10,7 @@ import (
 	"log"
 	"os"
 
+	"axis/internal/server"
 	"axis/internal/workspace"
 
 	"github.com/joho/godotenv"
@@ -73,6 +74,13 @@ func main() {
 	log.Printf("Verification successful: %s (%s)", user.Name, user.Email)
 
 	// 7. Start the Persistent TUI Server
-	// This function blocks and handles all incoming TUI requests.
-	StartServer(ws, user)
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8080"
+	}
+
+	srv := server.NewServer(ws, user)
+	if err := srv.Start(port); err != nil {
+		log.Fatalf("Server failed: %v", err)
+	}
 }

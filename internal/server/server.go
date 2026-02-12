@@ -13,14 +13,23 @@ import (
 // Server handles HTTP communication and TUI orchestration.
 type Server struct {
 	ws     *workspace.Service
+	user   *workspace.User
 	mode   string
 	modeMu sync.RWMutex
 }
 
-// NewServer initializes the server with the workspace service.
-func NewServer(ws *workspace.Service) *Server {
+// UserResponse provides minimal operator context for the UI.
+type UserResponse struct {
+	Name  string `json:"name"`
+	Email string `json:"email"`
+	ID    string `json:"id"`
+}
+
+// NewServer initializes the server with the workspace service and user context.
+func NewServer(ws *workspace.Service, user *workspace.User) *Server {
 	return &Server{
 		ws:   ws,
+		user: user,
 		mode: "AUTO",
 	}
 }
@@ -34,10 +43,11 @@ func (s *Server) Start(port string) error {
 	mux.HandleFunc("/api/notes/delete", s.handleDelete)
 	mux.HandleFunc("/api/notes/detail", s.handleNoteDetail)
 	mux.HandleFunc("/api/mode", s.handleMode)
+	mux.HandleFunc("/api/user", s.handleUser)
 
 	// Static Asset Mounting
-	// Serves index.html and associated assets from the /web directory
-	fileServer := http.FileServer(http.Dir("web"))
+	// Serves index.html and associated assets from the /web/dist directory
+	fileServer := http.FileServer(http.Dir("./web/dist"))
 	mux.Handle("/", fileServer)
 
 	log.Printf("Axis Server active on port %s", port)
@@ -107,4 +117,13 @@ func (s *Server) handleMode(w http.ResponseWriter, r *http.Request) {
 	s.mode = newMode
 	s.modeMu.Unlock()
 	w.WriteHeader(http.StatusOK)
+}
+
+func (s *Server) handleUser(w http.ResponseWriter, r *http.Request) {
+	if s.user == nil {
+		http.Error(w, "user profile unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(UserResponse{Name: s.user.Name, Email: s.user.Email, ID: s.user.ID})
 }
