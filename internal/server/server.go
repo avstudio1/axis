@@ -1,8 +1,8 @@
 /*
 File: internal/server/server.go
-Description: HTTP server implementation for Axis Mundi. Handles API routing,
-Server-Sent Events (SSE) for real-time telemetry, and persistent state management
-for operational modes.
+Description: HTTP server implementation for Axis Mundi. Provides API routing,
+Server-Sent Events (SSE) for telemetry, an in-memory registry cache, and
+asynchronous persistence for operational state.
 */
 package server
 
@@ -10,16 +10,30 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
 	"axis/internal/workspace"
 )
 
-const stateFileName = "axis.state.json"
+const (
+	stateFileName    = "axis.state.json"
+	cacheTTL         = 5 * time.Minute
+	persistInterval  = 10 * time.Second
+	pollInterval     = 1 * time.Second
+	autoRefreshTicks = 60
+)
+
+// RegistryCache stores the latest registry snapshot with a TTL.
+type RegistryCache struct {
+	items     []workspace.RegistryItem
+	expiresAt time.Time
+	mu        sync.RWMutex
+}
 
 // SSEMessage wraps data with an optional event type.
 type SSEMessage struct {
@@ -27,15 +41,26 @@ type SSEMessage struct {
 	Data  []byte
 }
 
+// persistentState defines the structure for disk storage.
+type persistentState struct {
+	Mode     string            `json:"mode"`
+	Statuses map[string]string `json:"statuses"`
+}
+
 // Server handles HTTP communication and TUI orchestration.
 type Server struct {
-	ws        *workspace.Service
-	user      *workspace.User
-	mode      string
-	statuses  map[string]string
-	modeMu    sync.RWMutex
+	ws       *workspace.Service
+	user     *workspace.User
+	mode     string
+	statuses map[string]string
+	modeMu   sync.RWMutex
+
+	registryCache RegistryCache
+	stateChan     chan persistentState
+
 	clients   map[chan SSEMessage]bool
 	clientsMu sync.Mutex
+	logger    *slog.Logger
 }
 
 // UserResponse provides minimal operator context for the UI.
@@ -50,67 +75,59 @@ type ModeResponse struct {
 	Mode string `json:"mode"`
 }
 
-// persistentState defines the structure for disk storage.
-type persistentState struct {
-	Mode     string            `json:"mode"`
-	Statuses map[string]string `json:"statuses"`
-}
-
 // NewServer initializes the server with the workspace service and user context.
 func NewServer(ws *workspace.Service, user *workspace.User) *Server {
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	s := &Server{
-		ws:       ws,
-		user:     user,
-		mode:     "AUTO", // Default safe state
-		statuses: make(map[string]string),
-		clients:  make(map[chan SSEMessage]bool),
+		ws:        ws,
+		user:      user,
+		mode:      "AUTO",
+		statuses:  make(map[string]string),
+		stateChan: make(chan persistentState, 16),
+		clients:   make(map[chan SSEMessage]bool),
+		logger:    logger,
 	}
-	s.loadState() // Attempt to restore state from disk
+	s.loadState()
 	return s
 }
 
-// loadState reads the configuration file and restores the mode.
+// loadState restores mode/statuses from disk if available.
 func (s *Server) loadState() {
+	start := time.Now()
 	data, err := os.ReadFile(stateFileName)
 	if err != nil {
 		if !os.IsNotExist(err) {
-			log.Printf("Warning: Failed to read state file: %v", err)
+			s.logger.Error("failed to read state file", "error", err)
 		}
 		return
 	}
 
 	var ps persistentState
 	if err := json.Unmarshal(data, &ps); err != nil {
-		log.Printf("Warning: Corrupt state file: %v", err)
+		s.logger.Error("corrupt state file", "error", err)
 		return
 	}
 
+	s.modeMu.Lock()
+	defer s.modeMu.Unlock()
 	if ps.Mode == "AUTO" || ps.Mode == "MANUAL" {
 		s.mode = ps.Mode
-		log.Printf("State restored: %s", s.mode)
 	}
 	if ps.Statuses != nil {
-		s.statuses = ps.Statuses
-		log.Printf("Item statuses restored: %d items", len(s.statuses))
+		// Migrate old state values to new ones
+		s.statuses = make(map[string]string, len(ps.Statuses))
+		for id, status := range ps.Statuses {
+			switch status {
+			case "Keep", "Delete":
+				s.statuses[id] = "Pending"
+			case "Execute":
+				s.statuses[id] = "Execute"
+			default:
+				s.statuses[id] = status
+			}
+		}
 	}
-}
-
-// saveState writes the current mode to disk.
-// Note: Must be called while s.modeMu is locked.
-func (s *Server) saveState() {
-	ps := persistentState{
-		Mode:     s.mode,
-		Statuses: s.statuses,
-	}
-	data, err := json.MarshalIndent(ps, "", "  ")
-	if err != nil {
-		log.Printf("Error marshaling state: %v", err)
-		return
-	}
-
-	if err := os.WriteFile(stateFileName, data, 0644); err != nil {
-		log.Printf("Error writing state file: %v", err)
-	}
+	s.logger.Info("state restored", "duration", time.Since(start), "items", len(s.statuses))
 }
 
 // Start launches the HTTP server and background automation ticker.
@@ -137,33 +154,162 @@ func (s *Server) Start(port string) error {
 	fileServer := http.FileServer(http.Dir("./web/dist"))
 	mux.Handle("/", fileServer)
 
-	// Background Poller (The Heartbeat)
-	go s.runPoller()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
-	log.Printf("Axis Server active on port %s (SSE Enabled)", port)
+	go s.runPersistence(ctx)
+	go s.runPoller(ctx)
+
+	s.logger.Info("axis server active", "port", port, "sse", true)
 	return http.ListenAndServe(":"+port, mux)
 }
 
-func (s *Server) runPoller() {
-	ticker := time.NewTicker(1 * time.Second)
+func (s *Server) runPersistence(ctx context.Context) {
+	ticker := time.NewTicker(persistInterval)
 	defer ticker.Stop()
 
-	remaining := 60
-	for range ticker.C {
-		s.modeMu.RLock()
-		mode := s.mode
-		s.modeMu.RUnlock()
+	var lastState persistentState
+	dirty := false
 
-		if mode == "AUTO" {
-			remaining--
-			s.broadcastTick(remaining)
-
-			if remaining <= 0 {
-				s.broadcastRegistry()
-				remaining = 60
+	for {
+		select {
+		case state := <-s.stateChan:
+			lastState = state
+			dirty = true
+		case <-ticker.C:
+			if dirty {
+				s.flushToDisk(lastState)
+				dirty = false
 			}
-		} else {
-			remaining = 60
+		case <-ctx.Done():
+			if dirty {
+				s.flushToDisk(lastState)
+			}
+			return
+		}
+	}
+}
+
+func (s *Server) flushToDisk(ps persistentState) {
+	start := time.Now()
+	data, err := json.MarshalIndent(ps, "", "  ")
+	if err != nil {
+		s.logger.Error("marshal error", "error", err)
+		return
+	}
+	if err := os.WriteFile(stateFileName, data, 0644); err != nil {
+		s.logger.Error("disk write error", "error", err)
+		return
+	}
+	s.logger.Info("state flushed", "latency", time.Since(start), "entries", len(ps.Statuses))
+}
+
+func (s *Server) runPoller(ctx context.Context) {
+	ticker := time.NewTicker(pollInterval)
+	defer ticker.Stop()
+
+	remaining := autoRefreshTicks
+	for {
+		select {
+		case <-ticker.C:
+			s.modeMu.RLock()
+			mode := s.mode
+			s.modeMu.RUnlock()
+
+			if mode == "AUTO" {
+				remaining--
+				s.broadcastTick(remaining)
+				if remaining <= 0 {
+					s.refreshRegistryCache()
+					s.broadcastRegistry()
+					remaining = autoRefreshTicks
+				}
+			} else {
+				remaining = autoRefreshTicks
+			}
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+func (s *Server) refreshRegistryCache() {
+	start := time.Now()
+	items, err := s.ws.ListRegistryItems()
+	if err != nil {
+		s.logger.Error("workspace fetch failed", "error", err)
+		return
+	}
+
+	needsSnapshot := s.backfillKeepStatuses(items)
+
+	// Clean up statuses for notes that no longer exist
+	if s.cleanupStaleStatuses(items) {
+		needsSnapshot = true
+	}
+
+	s.registryCache.mu.Lock()
+	s.registryCache.items = cloneItems(items)
+	s.registryCache.expiresAt = time.Now().Add(cacheTTL)
+	s.registryCache.mu.Unlock()
+
+	if needsSnapshot {
+		s.triggerStateSnapshot()
+	}
+
+	s.logger.Info("cache refreshed", "duration", time.Since(start), "count", len(items))
+}
+
+func (s *Server) cachedItemsFresh() ([]workspace.RegistryItem, bool) {
+	s.registryCache.mu.RLock()
+	defer s.registryCache.mu.RUnlock()
+	fresh := time.Now().Before(s.registryCache.expiresAt)
+	return cloneItems(s.registryCache.items), fresh
+}
+
+func cloneItems(items []workspace.RegistryItem) []workspace.RegistryItem {
+	if len(items) == 0 {
+		return nil
+	}
+	dup := make([]workspace.RegistryItem, len(items))
+	copy(dup, items)
+	return dup
+}
+
+func (s *Server) enrichItems(items []workspace.RegistryItem) []workspace.RegistryItem {
+	s.modeMu.RLock()
+	defer s.modeMu.RUnlock()
+
+	res := make([]workspace.RegistryItem, len(items))
+	for i, item := range items {
+		res[i] = item
+		if status, ok := s.statuses[item.ID]; ok {
+			res[i].Status = status
+		} else if item.Type == "keep" {
+			res[i].Status = "Pending"
+		}
+	}
+	return res
+}
+
+func (s *Server) broadcastRegistry() {
+	items, _ := s.cachedItemsFresh()
+	if len(items) == 0 {
+		s.refreshRegistryCache()
+		items, _ = s.cachedItemsFresh()
+	}
+	data, err := json.Marshal(s.enrichItems(items))
+	if err != nil {
+		s.logger.Error("registry marshal failed", "error", err)
+		return
+	}
+
+	s.clientsMu.Lock()
+	defer s.clientsMu.Unlock()
+	for clientChan := range s.clients {
+		select {
+		case clientChan <- SSEMessage{Data: data}:
+		default:
 		}
 	}
 }
@@ -181,44 +327,15 @@ func (s *Server) broadcastTick(remaining int) {
 	}
 }
 
-// enrichItems adds stored status to the registry items.
-func (s *Server) enrichItems(items []workspace.RegistryItem) []workspace.RegistryItem {
-	s.modeMu.Lock()
-	defer s.modeMu.Unlock()
-
-	modified := false
-	enriched := make([]workspace.RegistryItem, len(items))
-	for i, item := range items {
-		enriched[i] = item
-		if status, ok := s.statuses[item.ID]; ok {
-			enriched[i].Status = status
-		} else if item.Type == "keep" {
-			enriched[i].Status = "Keep" // Default
-			if s.statuses == nil {
-				s.statuses = make(map[string]string)
-			}
-			s.statuses[item.ID] = "Keep"
-			modified = true
-		}
+func (s *Server) broadcastStatusChange(id, status, title string) {
+	payload := map[string]string{
+		"id":     id,
+		"status": status,
+		"title":  title,
 	}
-
-	if modified {
-		s.saveState()
-	}
-	return enriched
-}
-
-func (s *Server) broadcastRegistry() {
-	rawItems, err := s.ws.ListRegistryItems()
+	data, err := json.Marshal(payload)
 	if err != nil {
-		log.Printf("Error fetching registry for broadcast: %v", err)
-		return
-	}
-	items := s.enrichItems(rawItems)
-
-	data, err := json.Marshal(items)
-	if err != nil {
-		log.Printf("Error marshaling registry: %v", err)
+		s.logger.Error("status change marshal failed", "error", err)
 		return
 	}
 
@@ -226,62 +343,163 @@ func (s *Server) broadcastRegistry() {
 	defer s.clientsMu.Unlock()
 	for clientChan := range s.clients {
 		select {
-		case clientChan <- SSEMessage{Data: data}:
+		case clientChan <- SSEMessage{Event: "status", Data: data}:
 		default:
-			// If client channel is blocked, skip to prevent server blocking
 		}
 	}
 }
 
-func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
-	// SSE Headers
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	w.Header().Set("Access-Control-Allow-Origin", "*")
+func (s *Server) triggerStateSnapshot() {
+	s.modeMu.RLock()
+	ps := s.snapshotStateLocked()
+	s.modeMu.RUnlock()
 
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		http.Error(w, "Streaming unsupported", http.StatusInternalServerError)
-		return
+	select {
+	case s.stateChan <- ps:
+	default:
+		s.logger.Warn("persistence channel full, dropping snapshot")
+	}
+}
+
+func (s *Server) snapshotStateLocked() persistentState {
+	statuses := make(map[string]string, len(s.statuses))
+	for k, v := range s.statuses {
+		statuses[k] = v
+	}
+	return persistentState{Mode: s.mode, Statuses: statuses}
+}
+
+func (s *Server) isManualMode() bool {
+	s.modeMu.RLock()
+	defer s.modeMu.RUnlock()
+	return s.mode == "MANUAL"
+}
+
+func (s *Server) getItemTitle(id string) string {
+	s.registryCache.mu.RLock()
+	defer s.registryCache.mu.RUnlock()
+	for _, item := range s.registryCache.items {
+		if item.ID == id {
+			return item.Title
+		}
+	}
+	return ""
+}
+
+func (s *Server) backfillKeepStatuses(items []workspace.RegistryItem) bool {
+	needSnapshot := false
+	s.modeMu.Lock()
+	var newItems []workspace.RegistryItem
+	for _, item := range items {
+		if item.Type != "keep" {
+			continue
+		}
+		if _, exists := s.statuses[item.ID]; exists {
+			continue
+		}
+		s.statuses[item.ID] = "Pending"
+		needSnapshot = true
+		newItems = append(newItems, item)
+	}
+	s.modeMu.Unlock()
+
+	// Broadcast telemetry for new notes initialized to Pending
+	for _, item := range newItems {
+		s.broadcastStatusChange(item.ID, "Pending", item.Title)
 	}
 
-	// Register Client
-	msgChan := make(chan SSEMessage, 10) // Buffer 10 to prevent slight blocking
-	s.clientsMu.Lock()
-	s.clients[msgChan] = true
-	s.clientsMu.Unlock()
+	return needSnapshot
+}
 
-	// Cleanup on disconnect
-	defer func() {
-		s.clientsMu.Lock()
-		delete(s.clients, msgChan)
-		s.clientsMu.Unlock()
-		close(msgChan)
-	}()
-
-	// Send initial state immediately
-	go func() {
-		rawItems, err := s.ws.ListRegistryItems()
-		if err == nil {
-			items := s.enrichItems(rawItems)
-			data, _ := json.Marshal(items)
-			msgChan <- SSEMessage{Data: data}
+// cleanupStaleStatuses removes statuses for keep notes that no longer exist
+func (s *Server) cleanupStaleStatuses(items []workspace.RegistryItem) bool {
+	// Build a set of current keep note IDs
+	keepIDs := make(map[string]bool)
+	for _, item := range items {
+		if item.Type == "keep" {
+			keepIDs[item.ID] = true
 		}
-	}()
+	}
 
-	// Event Loop
-	for {
-		select {
-		case msg := <-msgChan:
-			if msg.Event != "" {
-				fmt.Fprintf(w, "event: %s\n", msg.Event)
-			}
-			fmt.Fprintf(w, "data: %s\n\n", msg.Data)
-			flusher.Flush()
-		case <-r.Context().Done():
-			return
+	needSnapshot := false
+	s.modeMu.Lock()
+	for id := range s.statuses {
+		// If this status is for a keep note that no longer exists, remove it
+		if !keepIDs[id] {
+			delete(s.statuses, id)
+			needSnapshot = true
+			s.logger.Info("removed stale status", "id", id)
 		}
+	}
+	s.modeMu.Unlock()
+	return needSnapshot
+}
+
+func (s *Server) ensureStatusDefault(id, defaultStatus string) (string, bool) {
+	s.modeMu.Lock()
+	defer s.modeMu.Unlock()
+
+	if status, ok := s.statuses[id]; ok {
+		return status, false
+	}
+
+	s.statuses[id] = defaultStatus
+	return defaultStatus, true
+}
+
+func (s *Server) ensureKeepNoteCached(id, title string) bool {
+	if id == "" {
+		return false
+	}
+
+	status, created := s.ensureStatusDefault(id, "Pending")
+	needSnapshot := created
+	added := false
+	item := workspace.RegistryItem{
+		ID:      id,
+		Type:    "keep",
+		Title:   sanitizeNoteTitle(title),
+		Snippet: "Google Keep Note",
+		Status:  status,
+	}
+
+	s.registryCache.mu.Lock()
+	replaced := false
+	for i := range s.registryCache.items {
+		if s.registryCache.items[i].ID == id {
+			s.registryCache.items[i] = item
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		s.registryCache.items = append(s.registryCache.items, item)
+		added = true
+	}
+	s.registryCache.expiresAt = time.Now().Add(cacheTTL)
+	s.registryCache.mu.Unlock()
+
+	if needSnapshot {
+		s.triggerStateSnapshot()
+	}
+
+	return added
+}
+
+func sanitizeNoteTitle(raw string) string {
+	t := strings.TrimSpace(raw)
+	if t == "" {
+		return "Untitled"
+	}
+	return t
+}
+
+func truthyParam(v string) bool {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "1", "true", "t", "yes", "y", "force", "refresh":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -306,6 +524,13 @@ func (s *Server) handleNoteDetail(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
+	}
+
+	if note != nil {
+		added := s.ensureKeepNoteCached(note.Name, note.Title)
+		if added {
+			s.broadcastRegistry()
+		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -336,9 +561,8 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Immediate update to all clients
-	go s.broadcastRegistry()
-
+	s.refreshRegistryCache()
+	s.broadcastRegistry()
 	w.WriteHeader(http.StatusOK)
 }
 
@@ -346,22 +570,23 @@ func (s *Server) handleMode(w http.ResponseWriter, r *http.Request) {
 	newMode := r.URL.Query().Get("set")
 
 	s.modeMu.Lock()
-	defer s.modeMu.Unlock()
-
-	// GET Request: Return current mode
 	if newMode == "" {
+		mode := s.mode
+		s.modeMu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(ModeResponse{Mode: s.mode})
+		json.NewEncoder(w).Encode(ModeResponse{Mode: mode})
 		return
 	}
 
-	// SET Request: Update mode
 	if newMode != "AUTO" && newMode != "MANUAL" {
+		s.modeMu.Unlock()
 		http.Error(w, "invalid mode", http.StatusBadRequest)
 		return
 	}
 	s.mode = newMode
-	s.saveState() // Persist to disk
+	s.modeMu.Unlock()
+
+	s.triggerStateSnapshot()
 	w.WriteHeader(http.StatusOK)
 }
 
@@ -375,15 +600,24 @@ func (s *Server) handleUser(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleRegistry(w http.ResponseWriter, r *http.Request) {
-	rawItems, err := s.ws.ListRegistryItems()
-	if err != nil {
-		log.Printf("Error fetching registry items: %v", err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
+	manual := s.isManualMode()
+	forceRefresh := manual && truthyParam(r.URL.Query().Get("refresh"))
+	if forceRefresh {
+		s.refreshRegistryCache()
+		s.broadcastRegistry()
 	}
-	items := s.enrichItems(rawItems)
+
+	items, fresh := s.cachedItemsFresh()
+	if !fresh || len(items) == 0 {
+		s.refreshRegistryCache()
+		items, _ = s.cachedItemsFresh()
+	}
+
+	enriched := s.enrichItems(items)
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(items)
+	if err := json.NewEncoder(w).Encode(enriched); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
 }
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
@@ -396,13 +630,17 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.modeMu.Lock()
-	if s.statuses == nil {
-		s.statuses = make(map[string]string)
-	}
 	s.statuses[id] = status
-	s.saveState()
 	s.modeMu.Unlock()
 
+	// Look up the note title for telemetry
+	title := s.getItemTitle(id)
+	if title != "" {
+		s.broadcastStatusChange(id, status, title)
+	}
+
+	s.triggerStateSnapshot()
+	s.broadcastRegistry()
 	w.WriteHeader(http.StatusOK)
 }
 
@@ -437,6 +675,12 @@ func (s *Server) handleDeleteSheet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if s.isManualMode() {
+		s.refreshRegistryCache()
+		s.broadcastRegistry()
+	} else {
+		go s.refreshAndBroadcast()
+	}
 	w.WriteHeader(http.StatusOK)
 }
 
@@ -471,5 +715,76 @@ func (s *Server) handleDeleteDoc(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if s.isManualMode() {
+		s.refreshRegistryCache()
+		s.broadcastRegistry()
+	} else {
+		go s.refreshAndBroadcast()
+	}
 	w.WriteHeader(http.StatusOK)
+}
+
+func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "Streaming unsupported", http.StatusInternalServerError)
+		return
+	}
+
+	msgChan := make(chan SSEMessage, 10)
+	s.clientsMu.Lock()
+	s.clients[msgChan] = true
+	s.clientsMu.Unlock()
+
+	defer func() {
+		s.clientsMu.Lock()
+		delete(s.clients, msgChan)
+		s.clientsMu.Unlock()
+		close(msgChan)
+	}()
+
+	go s.sendInitialRegistrySnapshot(msgChan)
+
+	for {
+		select {
+		case msg := <-msgChan:
+			if msg.Event != "" {
+				fmt.Fprintf(w, "event: %s\n", msg.Event)
+			}
+			fmt.Fprintf(w, "data: %s\n\n", msg.Data)
+			flusher.Flush()
+		case <-r.Context().Done():
+			return
+		}
+	}
+}
+
+func (s *Server) sendInitialRegistrySnapshot(ch chan<- SSEMessage) {
+	items, fresh := s.cachedItemsFresh()
+	if !fresh || len(items) == 0 {
+		s.refreshRegistryCache()
+		items, _ = s.cachedItemsFresh()
+	}
+	if len(items) == 0 {
+		return
+	}
+	data, err := json.Marshal(s.enrichItems(items))
+	if err != nil {
+		s.logger.Error("initial snapshot marshal failed", "error", err)
+		return
+	}
+	select {
+	case ch <- SSEMessage{Data: data}:
+	default:
+	}
+}
+
+func (s *Server) refreshAndBroadcast() {
+	s.refreshRegistryCache()
+	s.broadcastRegistry()
 }

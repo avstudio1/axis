@@ -171,6 +171,16 @@ const App = () => {
             } catch (err) { console.error('Tick parse error', err); }
         });
 
+        es.addEventListener('status', (e) => {
+            try {
+                const data = JSON.parse(e.data);
+                if (data.status && data.title) {
+                    const logType = data.status === 'Execute' ? 'execute' : 'warning';
+                    addLog(logType, `Status → ${data.status}: ${data.title}`);
+                }
+            } catch (err) { console.error('Status event parse error', err); }
+        });
+
         es.onerror = () => setConnected(false);
         return () => { es.close(); setConnected(false); };
     }, []);
@@ -230,8 +240,8 @@ const App = () => {
                     if (registry.length === 0) break;
                     const currentItem = registry[selectedIndex];
                     if (currentItem && currentItem.type === 'keep') {
-                        const currentStatus = currentItem.status || 'Keep';
-                        const cycle = ['Keep', 'Execute', 'Delete'];
+                        const currentStatus = currentItem.status || 'Pending';
+                        const cycle = ['Pending', 'Execute'];
                         let idx = cycle.indexOf(currentStatus);
                         if (idx === -1) idx = 0;
                         
@@ -320,12 +330,10 @@ const App = () => {
 
     const getTagStyles = (tag) => {
         switch (tag) {
-            case 'keep': 
-            case 'Keep':
+            case 'keep':
+            case 'Pending':
                 return 'border-yellow-700/60 text-yellow-300';
-            case 'Delete': 
-                return 'border-red-700/60 text-red-300';
-            case 'Execute': 
+            case 'Execute':
                 return 'border-purple-700/60 text-purple-300';
             case 'doc': return 'border-blue-700/60 text-blue-300';
             case 'sheet': return 'border-green-700/60 text-green-300';
@@ -365,7 +373,13 @@ const App = () => {
                         {logs.map((log, i) => (
                             <div key={i} className="flex gap-2">
                                 <span className="text-gray-700">[{log.timestamp}]</span>
-                                <span className={log.type === 'error' ? 'text-red-500' : log.type === 'success' ? 'text-emerald-500' : 'text-gray-500'}>
+                                <span className={
+                                    log.type === 'error' ? 'text-red-500' :
+                                    log.type === 'success' ? 'text-emerald-500' :
+                                    log.type === 'warning' ? 'text-yellow-500' :
+                                    log.type === 'execute' ? 'text-purple-300' :
+                                    'text-gray-500'
+                                }>
                                     {log.message}
                                 </span>
                             </div>
@@ -381,8 +395,8 @@ const App = () => {
                     {!showDetail ? (
                         <div className="space-y-1 overflow-y-auto scrollbar-hide">
                             {registry.map((item, i) => {
-                                const tagLabel = (item.type === 'keep') 
-                                    ? (item.status || 'Keep') 
+                                const tagLabel = (item.type === 'keep')
+                                    ? (item.status || 'Pending')
                                     : item.type;
                                 return (
                                 <div key={item.id} className={`p-2 border transition-all ${i === selectedIndex && mode === 'MANUAL' ? 'bg-emerald-950/30 border-emerald-500 text-emerald-300' : 'border-transparent text-gray-600'}`}>
