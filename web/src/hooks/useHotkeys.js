@@ -1,0 +1,77 @@
+import { useEffect } from 'react';
+
+export function useHotkeys(options) {
+    const {
+        mode,
+        showDetail,
+        setShowDetail,
+        onSyncMode,
+        onRefresh,
+        onSelectNext,
+        onSelectPrev,
+        onInspect,
+        onDelete,
+        onCycleStatus,
+        detailRef,
+        detailScrollStep = 50,
+    } = options;
+
+    useEffect(() => {
+        const handleKeyDown = (e) => {
+            const key = e.key.toLowerCase();
+
+            if (key === 'a') { onSyncMode('AUTO'); setShowDetail(false); return; }
+            if (key === 'm') { onSyncMode('MANUAL'); return; }
+            if (key === 'r') { 
+                if (mode === 'MANUAL') onRefresh(); 
+                return; 
+            }
+
+            if (mode !== 'MANUAL') return;
+
+            if (showDetail && key === 'escape') {
+                setShowDetail(false);
+                return;
+            }
+
+            switch (e.key) {
+                case 'ArrowDown':
+                    e.preventDefault();
+                    if (showDetail) {
+                        if (detailRef?.current) detailRef.current.scrollTop += detailScrollStep;
+                    } else {
+                        onSelectNext();
+                    }
+                    break;
+                case 'ArrowUp':
+                    e.preventDefault();
+                    if (showDetail) {
+                        if (detailRef?.current) detailRef.current.scrollTop -= detailScrollStep;
+                    } else {
+                        onSelectPrev();
+                    }
+                    break;
+                case 'Enter':
+                case ' ':
+                    e.preventDefault();
+                    onInspect();
+                    break;
+                case 'Delete':
+                case 'Backspace':
+                    onDelete();
+                    break;
+                case 'PageUp':
+                    e.preventDefault();
+                    onCycleStatus('forward');
+                    break;
+                case 'PageDown':
+                    e.preventDefault();
+                    onCycleStatus('back');
+                    break;
+            }
+        };
+
+        window.addEventListener('keydown', handleKeyDown);
+        return () => window.removeEventListener('keydown', handleKeyDown);
+    }, [mode, showDetail, setShowDetail, onSyncMode, onRefresh, onSelectNext, onSelectPrev, onInspect, onDelete, onCycleStatus, detailRef, detailScrollStep]);
+}

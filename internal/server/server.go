@@ -587,7 +587,8 @@ func (s *Server) handleMode(w http.ResponseWriter, r *http.Request) {
 	s.modeMu.Unlock()
 
 	s.triggerStateSnapshot()
-	w.WriteHeader(http.StatusOK)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(ModeResponse{Mode: newMode})
 }
 
 func (s *Server) handleUser(w http.ResponseWriter, r *http.Request) {
