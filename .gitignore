@@ -33,5 +33,6 @@ node_modules/
 
 # Project specific
 web/dist/
+deploy.sh
 test.sh
 axis.state.json
