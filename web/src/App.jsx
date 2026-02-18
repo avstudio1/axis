@@ -179,7 +179,7 @@ const App = () => {
                 const list = firstDefined(section, ['list', 'List']);
                 const itemsList = firstDefined(list, ['listItems', 'ListItems']);
                 const items = Array.isArray(itemsList) ? itemsList : [];
-                
+
                 if (items.length > 0) {
                     const lines = [];
                     const walk = (entries, depth) => {
@@ -212,13 +212,20 @@ const App = () => {
 
     const getTagStyles = (tag) => {
         switch (tag) {
-            case 'keep':
             case 'Pending':
                 return 'border-yellow-700/60 text-yellow-300';
             case 'Execute':
                 return 'border-purple-700/60 text-purple-300';
+            case 'Active':
+                return 'border-cyan-700/60 text-cyan-300';
+            case 'Blocked':
+                return 'border-orange-700/60 text-orange-300';
+            case 'Review':
+                return 'border-magenta-700/60 text-magenta-300';
             case 'Complete':
                 return 'border-emerald-700/60 text-emerald-300';
+            case 'Error':
+                return 'border-red-700/60 text-red-300';
             case 'doc': return 'border-blue-700/60 text-blue-300';
             case 'sheet': return 'border-green-700/60 text-green-300';
             default: return 'border-gray-700/60 text-gray-300';

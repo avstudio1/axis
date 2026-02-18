@@ -6,11 +6,17 @@ const TelemetryPanel = ({ logs, scrollRef }) => (
                 <div key={i} className="flex gap-2">
                     <span className="text-gray-700">[{log.timestamp}]</span>
                     <span className={
-                        log.type === 'error' ? 'text-red-500' :
-                        log.type === 'success' ? 'text-emerald-500' :
-                        log.type === 'warning' ? 'text-yellow-500' :
-                        log.type === 'execute' ? 'text-purple-300' :
-                        'text-gray-500'
+                        log.type === 'Error' ? 'text-red-300' :
+                            log.type === 'Complete' ? 'text-emerald-300' :
+                                log.type === 'Pending' ? 'text-yellow-300' :
+                                    log.type === 'Execute' ? 'text-purple-300' :
+                                        log.type === 'Active' ? 'text-cyan-300' :
+                                            log.type === 'Blocked' ? 'text-orange-300' :
+                                                log.type === 'Review' ? 'text-magenta-300' :
+                                                    log.type === 'error' ? 'text-red-500' :
+                                                        log.type === 'success' ? 'text-emerald-500' :
+                                                            log.type === 'system' ? 'text-blue-400' :
+                                                                'text-gray-500'
                     }>
                         {log.message}
                     </span>

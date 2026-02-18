@@ -17,11 +17,13 @@ import (
 	"sync"
 	"time"
 
+	"axis/internal/database"
 	"axis/internal/workspace"
 )
 
 const (
 	stateFileName    = "axis.state.json"
+	dbFileName       = "axis.db"
 	cacheTTL         = 5 * time.Minute
 	persistInterval  = 10 * time.Second
 	pollInterval     = 1 * time.Second
@@ -31,7 +33,11 @@ const (
 var allowedStatuses = map[string]bool{
 	"Pending":  true,
 	"Execute":  true,
+	"Active":   true,
+	"Blocked":  true,
+	"Review":   true,
 	"Complete": true,
+	"Error":    true,
 }
 
 // RegistryCache stores the latest registry snapshot with a TTL.
@@ -56,13 +62,13 @@ type persistentState struct {
 // Server handles HTTP communication and TUI orchestration.
 type Server struct {
 	ws       *workspace.Service
+	db       *database.DB
 	user     *workspace.User
 	mode     string
 	statuses map[string]string
 	modeMu   sync.RWMutex
 
 	registryCache RegistryCache
-	stateChan     chan persistentState
 
 	clients   map[chan SSEMessage]bool
 	clientsMu sync.Mutex
@@ -84,55 +90,97 @@ type ModeResponse struct {
 // NewServer initializes the server with the workspace service and user context.
 func NewServer(ws *workspace.Service, user *workspace.User) *Server {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+
+	db, err := database.NewDB(dbFileName)
+	if err != nil {
+		logger.Error("failed to initialize database", "error", err)
+		os.Exit(1)
+	}
+
 	s := &Server{
-		ws:        ws,
-		user:      user,
-		mode:      "AUTO",
-		statuses:  make(map[string]string),
-		stateChan: make(chan persistentState, 16),
-		clients:   make(map[chan SSEMessage]bool),
-		logger:    logger,
+		ws:       ws,
+		db:       db,
+		user:     user,
+		mode:     "AUTO",
+		statuses: make(map[string]string),
+		clients:  make(map[chan SSEMessage]bool),
+		logger:   logger,
 	}
 	s.loadState()
 	return s
 }
 
-// loadState restores mode/statuses from disk if available.
+// loadState restores mode/statuses from SQLite, migrating from JSON if necessary.
 func (s *Server) loadState() {
 	start := time.Now()
+
+	// 1. Check if we need to migrate from JSON
+	if _, err := os.Stat(stateFileName); err == nil {
+		s.logger.Info("found legacy state file, migrating to SQLite...")
+		s.migrateFromJSON()
+	}
+
+	// 2. Load mode from DB
+	mode, err := s.db.GetMode()
+	if err != nil {
+		s.logger.Error("failed to load mode from db", "error", err)
+	} else {
+		s.mode = mode
+	}
+
+	// 3. Load statuses from DB
+	statuses, err := s.db.GetStatuses()
+	if err != nil {
+		s.logger.Error("failed to load statuses from db", "error", err)
+	} else {
+		s.statuses = statuses
+	}
+
+	s.logger.Info("state restored from SQLite", "duration", time.Since(start), "items", len(s.statuses))
+}
+
+// migrateFromJSON reads the legacy JSON state and persists it to SQLite.
+func (s *Server) migrateFromJSON() {
 	data, err := os.ReadFile(stateFileName)
 	if err != nil {
-		if !os.IsNotExist(err) {
-			s.logger.Error("failed to read state file", "error", err)
-		}
+		s.logger.Error("failed to read legacy state file", "error", err)
 		return
 	}
 
 	var ps persistentState
 	if err := json.Unmarshal(data, &ps); err != nil {
-		s.logger.Error("corrupt state file", "error", err)
+		s.logger.Error("corrupt legacy state file", "error", err)
 		return
 	}
 
-	s.modeMu.Lock()
-	defer s.modeMu.Unlock()
-	if ps.Mode == "AUTO" || ps.Mode == "MANUAL" {
-		s.mode = ps.Mode
+	if ps.Mode != "" {
+		if err := s.db.SetMode(ps.Mode); err != nil {
+			s.logger.Error("failed to migrate mode", "error", err)
+		}
 	}
+
 	if ps.Statuses != nil {
-		// Migrate old state values to new ones
-		s.statuses = make(map[string]string, len(ps.Statuses))
 		for id, status := range ps.Statuses {
+			// Migrate old state values to new ones
 			if status == "Keep" || status == "Delete" {
 				status = "Pending"
 			}
 			if _, ok := allowedStatuses[status]; !ok {
 				status = "Pending"
 			}
-			s.statuses[id] = status
+			if err := s.db.SetStatus(id, status); err != nil {
+				s.logger.Error("failed to migrate status", "id", id, "error", err)
+			}
 		}
 	}
-	s.logger.Info("state restored", "duration", time.Since(start), "items", len(s.statuses))
+
+	// Backup legacy file
+	backupName := stateFileName + ".bak"
+	if err := os.Rename(stateFileName, backupName); err != nil {
+		s.logger.Error("failed to backup legacy state file", "error", err)
+	} else {
+		s.logger.Info("legacy state migrated and backed up", "backup", backupName)
+	}
 }
 
 // Start launches the HTTP server and background automation ticker.
@@ -163,53 +211,13 @@ func (s *Server) Start(port string) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	go s.runPersistence(ctx)
 	go s.runPoller(ctx)
 
 	s.logger.Info("axis server active", "port", port, "sse", true)
 	return http.ListenAndServe(":"+port, mux)
 }
 
-func (s *Server) runPersistence(ctx context.Context) {
-	ticker := time.NewTicker(persistInterval)
-	defer ticker.Stop()
-
-	var lastState persistentState
-	dirty := false
-
-	for {
-		select {
-		case state := <-s.stateChan:
-			lastState = state
-			dirty = true
-		case <-ticker.C:
-			if dirty {
-				s.flushToDisk(lastState)
-				dirty = false
-			}
-		case <-ctx.Done():
-			if dirty {
-				s.flushToDisk(lastState)
-			}
-			return
-		}
-	}
-}
-
-func (s *Server) flushToDisk(ps persistentState) {
-	start := time.Now()
-	data, err := json.MarshalIndent(ps, "", "  ")
-	if err != nil {
-		s.logger.Error("marshal error", "error", err)
-		return
-	}
-	if err := os.WriteFile(stateFileName, data, 0644); err != nil {
-		s.logger.Error("disk write error", "error", err)
-		return
-	}
-	s.logger.Info("state flushed", "latency", time.Since(start), "entries", len(ps.Statuses))
-}
-
+// runPoller processes periodic refreshes for AUTO mode.
 func (s *Server) runPoller(ctx context.Context) {
 	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
@@ -357,22 +365,24 @@ func (s *Server) broadcastStatusChange(id, status, title string) {
 
 func (s *Server) triggerStateSnapshot() {
 	s.modeMu.RLock()
-	ps := s.snapshotStateLocked()
-	s.modeMu.RUnlock()
-
-	select {
-	case s.stateChan <- ps:
-	default:
-		s.logger.Warn("persistence channel full, dropping snapshot")
-	}
-}
-
-func (s *Server) snapshotStateLocked() persistentState {
+	mode := s.mode
 	statuses := make(map[string]string, len(s.statuses))
 	for k, v := range s.statuses {
 		statuses[k] = v
 	}
-	return persistentState{Mode: s.mode, Statuses: statuses}
+	s.modeMu.RUnlock()
+
+	// Persist mode
+	if err := s.db.SetMode(mode); err != nil {
+		s.logger.Error("failed to persist mode", "error", err)
+	}
+
+	// Persist statuses
+	for id, status := range statuses {
+		if err := s.db.SetStatus(id, status); err != nil {
+			s.logger.Error("failed to persist status", "id", id, "error", err)
+		}
+	}
 }
 
 func (s *Server) isManualMode() bool {
