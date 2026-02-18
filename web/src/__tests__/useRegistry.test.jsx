@@ -24,7 +24,7 @@ class FakeEventSource {
     addEventListener(type, handler) {
         this.listeners[type] = handler;
     }
-    close() {}
+    close() { }
 }
 
 beforeAll(() => {
@@ -42,12 +42,23 @@ describe('useRegistry', () => {
 
     it('cycles status forward and back', () => {
         const { result } = renderHook(() => useRegistry());
+        // Forward cycle
         expect(result.current.nextStatus('Pending', 'forward')).toBe('Execute');
-        expect(result.current.nextStatus('Execute', 'forward')).toBe('Complete');
-        expect(result.current.nextStatus('Complete', 'forward')).toBe('Pending');
+        expect(result.current.nextStatus('Execute', 'forward')).toBe('Active');
+        expect(result.current.nextStatus('Active', 'forward')).toBe('Blocked');
+        expect(result.current.nextStatus('Blocked', 'forward')).toBe('Review');
+        expect(result.current.nextStatus('Review', 'forward')).toBe('Complete');
+        expect(result.current.nextStatus('Complete', 'forward')).toBe('Error');
+        expect(result.current.nextStatus('Error', 'forward')).toBe('Pending');
+
+        // Backward cycle
+        expect(result.current.nextStatus('Pending', 'back')).toBe('Error');
+        expect(result.current.nextStatus('Error', 'back')).toBe('Complete');
+        expect(result.current.nextStatus('Complete', 'back')).toBe('Review');
+        expect(result.current.nextStatus('Review', 'back')).toBe('Blocked');
+        expect(result.current.nextStatus('Blocked', 'back')).toBe('Active');
+        expect(result.current.nextStatus('Active', 'back')).toBe('Execute');
         expect(result.current.nextStatus('Execute', 'back')).toBe('Pending');
-        expect(result.current.nextStatus('Complete', 'back')).toBe('Execute');
-        expect(result.current.nextStatus('Pending', 'back')).toBe('Complete');
     });
 
     it('exposes registry defaults without crashing', () => {
