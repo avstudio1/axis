@@ -33,6 +33,7 @@ node_modules/
 
 # Project specific
 /axis
+/axis.db
 web/dist/
 deploy.sh
 test.sh
