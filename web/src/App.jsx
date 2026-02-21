@@ -50,6 +50,7 @@ const App = () => {
     } = useRegistry({ addLog, onRegistryChange: handleRegistryChange });
 
     const visibleRegistry = useMemo(() => {
+        if (viewType === 'all') return registry;
         return registry.filter(item => item.type === viewType);
     }, [registry, viewType]);
 
@@ -219,22 +220,17 @@ const App = () => {
 
     const getTagStyles = (tag) => {
         switch (tag) {
-            case 'Pending':
-                return 'border-yellow-700/60 text-yellow-300';
-            case 'Execute':
-                return 'border-purple-700/60 text-purple-300';
-            case 'Active':
-                return 'border-cyan-700/60 text-cyan-300';
-            case 'Blocked':
-                return 'border-orange-700/60 text-orange-300';
-            case 'Review':
-                return 'border-magenta-700/60 text-magenta-300';
-            case 'Complete':
-                return 'border-emerald-700/60 text-emerald-300';
-            case 'Error':
-                return 'border-red-700/60 text-red-300';
-            case 'doc': return 'border-blue-700/60 text-blue-300';
-            case 'sheet': return 'border-green-700/60 text-green-300';
+            case 'keep': return 'border-yellow-600/70 text-yellow-400';
+            case 'doc': return 'border-blue-600/70 text-blue-400';
+            case 'sheet': return 'border-emerald-600/70 text-emerald-400';
+
+            case 'Pending': return 'bg-yellow-900/30 text-yellow-300';
+            case 'Execute': return 'bg-purple-900/30 text-purple-300';
+            case 'Active': return 'bg-cyan-900/30 text-cyan-300';
+            case 'Blocked': return 'bg-orange-900/30 text-orange-300';
+            case 'Review': return 'bg-magenta-900/30 text-magenta-300';
+            case 'Complete': return 'bg-emerald-900/30 text-emerald-300';
+            case 'Error': return 'bg-red-900/30 text-red-300';
             default: return 'border-gray-700/60 text-gray-300';
         }
     };

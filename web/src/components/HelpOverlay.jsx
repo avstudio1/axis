@@ -22,6 +22,7 @@ const HelpOverlay = ({ isOpen, onClose }) => {
                             <div><span className="text-yellow-400 font-bold">Arrows</span> : Navigate / Scroll</div>
                             <div><span className="text-yellow-400 font-bold">Del/Bksp</span> : Delete Item</div>
                             <div><span className="text-yellow-400 font-bold">PgUp/PgDn</span> : Cycle Status</div>
+                            <div><span className="text-yellow-400 font-bold">K/D/S/V</span> : View Filters</div>
                         </div>
                     </section>
 

@@ -49,7 +49,7 @@ const DetailPanel = ({
                     </div>
                 )}
                 {isSheet && (
-                    <div className="border border-emerald-900/40 bg-black/50 p-2 rounded overflow-auto">
+                    <div className="border border-emerald-900/40 bg-black/50 p-2 rounded overflow-auto shrink-0 min-h-[250px] max-h-[60vh]">
                         <div className="text-[9px] uppercase text-emerald-400 mb-2">Grid Data</div>
                         <div className="select-text">
                             {(!sheetValues || sheetValues.length === 0) ? (
