@@ -1,25 +1,26 @@
 /*
-MIT License
+PROPRIETARY AND CONFIDENTIAL LICENSE
+Copyright © 2026 Justin Andrew Wood. All Rights Reserved.
 
-Copyright (c) 2026 Justin Andrew Wood
+1. OWNERSHIP
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+All title, ownership rights, and intellectual property rights in and to this project shall remain the exclusive property of Justin Andrew Wood.
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+2. RESTRICTIONS
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+No person or entity may:
+
+• Use, copy, modify, or distribute the Software/Project.
+
+• Sublicense, rent, lease, or lend the Software/Project.
+
+• Reverse engineer, decompile, or disassemble any components.
+
+• Make the project available over a network or public repository.
+
+3. NO GRANT OF LICENSE
+
+This document does not grant any licenses, express or implied, to any party. Any use without the prior written consent of Justin Andrew Wood is strictly prohibited.
 */
 
 package database
