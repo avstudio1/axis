@@ -30,7 +30,7 @@ export function useRegistry({ addLog, onRegistryChange } = {}) {
 
     const fetchRegistry = useCallback(async () => {
         try {
-            const normalized = await apiGetRegistry();
+            const normalized = await apiGetRegistry(true);
             setRegistry(normalized);
             onRegistryChange?.(normalized);
             addLog?.('success', 'Manual registry refresh.');

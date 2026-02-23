@@ -223,6 +223,7 @@ const App = () => {
             case 'keep': return 'border-yellow-600/70 text-yellow-400';
             case 'doc': return 'border-blue-600/70 text-blue-400';
             case 'sheet': return 'border-emerald-600/70 text-emerald-400';
+            case 'gmail': return 'border-gray-500 text-gray-300';
 
             case 'Pending': return 'bg-yellow-900/30 text-yellow-300';
             case 'Execute': return 'bg-purple-900/30 text-purple-300';
@@ -269,7 +270,8 @@ const App = () => {
                             isKeep={visibleRegistry[selectedIndex]?.type === 'keep'}
                             isDoc={visibleRegistry[selectedIndex]?.type === 'doc'}
                             isSheet={visibleRegistry[selectedIndex]?.type === 'sheet'}
-                            detailContent={visibleRegistry[selectedIndex]?.type === 'keep' ? formatNoteContent.fromNote(detailItem) : visibleRegistry[selectedIndex]?.type === 'doc' ? detailItem?.content : null}
+                            isGmail={visibleRegistry[selectedIndex]?.type === 'gmail'}
+                            detailContent={visibleRegistry[selectedIndex]?.type === 'keep' ? formatNoteContent.fromNote(detailItem) : (visibleRegistry[selectedIndex]?.type === 'doc' || visibleRegistry[selectedIndex]?.type === 'gmail') ? detailItem?.content : null}
                             sheetValues={visibleRegistry[selectedIndex]?.type === 'sheet' ? detailItem?.values : null}
                             detailItem={detailItem}
                             detailLoading={detailLoading}

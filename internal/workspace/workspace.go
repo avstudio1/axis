@@ -153,7 +153,7 @@ func (s *Service) ListRegistryItems() ([]RegistryItem, error) {
 
 	// 4. Fetch Gmail Threads
 	if s.gmailService != nil {
-		threadsList, err := s.gmailService.Users.Threads.List("me").Q("in:inbox").MaxResults(20).Do()
+		threadsList, err := s.gmailService.Users.Threads.List("me").Q("in:inbox").MaxResults(50).Do()
 		if err != nil {
 			return nil, fmt.Errorf("failed to list gmail threads: %w", err)
 		}
@@ -294,6 +294,15 @@ func (s *Service) GetGmailThread(threadId string) (*gmail.Thread, error) {
 		return nil, fmt.Errorf("unable to retrieve gmail thread %s: %w", threadId, err)
 	}
 	return thread, nil
+}
+
+// TrashGmailThread moves a thread to the trash
+func (s *Service) TrashGmailThread(threadId string) error {
+	_, err := s.gmailService.Users.Threads.Trash("me", threadId).Do()
+	if err != nil {
+		return fmt.Errorf("failed to trash gmail thread %s: %w", threadId, err)
+	}
+	return nil
 }
 
 // ExtractThreadContent distills a complex gmail.Thread into a plain text summary optimized for LLM context

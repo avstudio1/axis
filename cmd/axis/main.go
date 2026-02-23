@@ -80,7 +80,7 @@ func main() {
 			docs.DocumentsScope,
 			sheets.SpreadsheetsScope,
 			drive.DriveReadonlyScope,
-			gmail.GmailReadonlyScope,
+			gmail.GmailModifyScope,
 		},
 	})
 	if err != nil {

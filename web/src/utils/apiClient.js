@@ -37,8 +37,9 @@ export async function getUser() {
     return fetchJson('/api/user', { timeout: DEFAULT_TIMEOUT, retry: DEFAULT_RETRY });
 }
 
-export async function getRegistry() {
-    const data = await fetchJson('/api/registry', { timeout: DEFAULT_TIMEOUT, retry: DEFAULT_RETRY });
+export async function getRegistry(force = false) {
+    const url = force ? '/api/registry?refresh=1' : '/api/registry';
+    const data = await fetchJson(url, { timeout: DEFAULT_TIMEOUT, retry: DEFAULT_RETRY });
     return normalizeRegistry(data);
 }
 
@@ -54,6 +55,9 @@ export async function getDetail(item) {
             break;
         case 'sheet':
             url = `/api/sheets/detail?id=${encodeURIComponent(item.id)}`;
+            break;
+        case 'gmail':
+            url = `/api/gmail/detail?id=${encodeURIComponent(item.id)}`;
             break;
         default:
             throw new Error(`Unknown item type: ${item.type}`);
@@ -73,6 +77,9 @@ export async function deleteResource(item) {
             break;
         case 'sheet':
             url = `/api/sheets/delete?id=${encodeURIComponent(item.id)}`;
+            break;
+        case 'gmail':
+            url = `/api/gmail/delete?id=${encodeURIComponent(item.id)}`;
             break;
         default:
             throw new Error(`Unknown item type for deletion: ${item?.type || 'unknown'}`);

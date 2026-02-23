@@ -4,6 +4,7 @@ const DetailPanel = ({
     isKeep,
     isDoc,
     isSheet,
+    isGmail,
     detailContent,
     sheetValues,
     detailItem,
@@ -45,6 +46,14 @@ const DetailPanel = ({
                         <div className="text-[9px] uppercase text-indigo-400 mb-1">Document Content</div>
                         <div className="text-[11px] text-indigo-200 whitespace-pre-wrap leading-relaxed select-text">
                             {detailContent || 'Document is blank or unreadable.'}
+                        </div>
+                    </div>
+                )}
+                {isGmail && (
+                    <div className="border border-gray-700 bg-black/50 p-2 rounded">
+                        <div className="text-[9px] uppercase text-gray-400 mb-1">Gmail Thread Content</div>
+                        <div className="text-[11px] text-gray-200 whitespace-pre-wrap leading-relaxed select-text">
+                            {detailContent || 'No thread content found.'}
                         </div>
                     </div>
                 )}

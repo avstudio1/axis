@@ -221,6 +221,8 @@ func (s *Server) Start(port string) error {
 	mux.HandleFunc("/api/sheets/delete", s.handleDeleteSheet)
 	mux.HandleFunc("/api/docs/detail", s.handleGetDoc)
 	mux.HandleFunc("/api/docs/delete", s.handleDeleteDoc)
+	mux.HandleFunc("/api/gmail/detail", s.handleGetGmailThread)
+	mux.HandleFunc("/api/gmail/delete", s.handleDeleteGmailThread)
 	mux.HandleFunc("/api/registry", s.handleRegistry)
 	mux.HandleFunc("/api/status", s.handleStatus)
 
@@ -829,6 +831,55 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+}
+
+func (s *Server) handleGetGmailThread(w http.ResponseWriter, r *http.Request) {
+	id := r.URL.Query().Get("id")
+	if id == "" {
+		http.Error(w, "missing id", http.StatusBadRequest)
+		return
+	}
+
+	thread, err := s.ws.GetGmailThread(id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	content := workspace.ExtractThreadContent(thread)
+
+	response := map[string]interface{}{
+		"title":    "Gmail Thread",
+		"threadId": thread.Id,
+		"content":  content,
+		"raw":      thread,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(response); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
+}
+
+func (s *Server) handleDeleteGmailThread(w http.ResponseWriter, r *http.Request) {
+	id := r.URL.Query().Get("id")
+	if id == "" {
+		http.Error(w, "missing id", http.StatusBadRequest)
+		return
+	}
+
+	if err := s.ws.TrashGmailThread(id); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	if s.isManualMode() {
+		s.refreshRegistryCache()
+		s.broadcastRegistry()
+	} else {
+		go s.refreshAndBroadcast()
+	}
+	w.WriteHeader(http.StatusOK)
 }
 
 func (s *Server) sendInitialRegistrySnapshot(ch chan<- SSEMessage) {
