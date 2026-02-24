@@ -20,6 +20,7 @@ import (
 	gmail "google.golang.org/api/gmail/v1"
 	keep "google.golang.org/api/keep/v1"
 	sheets "google.golang.org/api/sheets/v4"
+	chat "google.golang.org/api/chat/v1"
 )
 
 // Service wraps the Google Workspace APIs using domain-wide delegated service account credentials.
@@ -31,6 +32,7 @@ type Service struct {
 	sheetsService *sheets.Service
 	driveService  *drive.Service
 	gmailService  *gmail.Service
+	chatService   *chat.Service
 }
 
 // User represents a simplified user structure
@@ -57,6 +59,7 @@ func NewService(
 	sheetsSvc *sheets.Service,
 	driveSvc *drive.Service,
 	gmailSvc *gmail.Service,
+	chatSvc *chat.Service,
 ) *Service {
 	return &Service{
 		adminService:  adminSvc,
@@ -65,6 +68,7 @@ func NewService(
 		sheetsService: sheetsSvc,
 		driveService:  driveSvc,
 		gmailService:  gmailSvc,
+		chatService:   chatSvc,
 	}
 }
 

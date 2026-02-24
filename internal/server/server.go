@@ -76,6 +76,8 @@ type Server struct {
 	clients   map[chan SSEMessage]bool
 	clientsMu sync.Mutex
 	logger    *slog.Logger
+
+	telemetryBuffer chan string
 }
 
 // UserResponse provides minimal operator context for the UI.
@@ -101,13 +103,14 @@ func NewServer(ws *workspace.Service, user *workspace.User) *Server {
 	}
 
 	s := &Server{
-		ws:       ws,
-		db:       db,
-		user:     user,
-		mode:     "AUTO",
-		statuses: make(map[string]string),
-		clients:  make(map[chan SSEMessage]bool),
-		logger:   logger,
+		ws:              ws,
+		db:              db,
+		user:            user,
+		mode:            "AUTO",
+		statuses:        make(map[string]string),
+		clients:         make(map[chan SSEMessage]bool),
+		logger:          logger,
+		telemetryBuffer: make(chan string, 100),
 	}
 	s.loadState()
 	return s
@@ -215,9 +218,47 @@ func (s *Server) Start(port string) error {
 	defer cancel()
 
 	go s.runPoller(ctx)
+	go s.runTelemetryFlusher(ctx)
 
 	s.logger.Info("axis server active", "port", port, "sse", true)
 	return http.ListenAndServe(":"+port, mux)
+}
+
+func (s *Server) bufferTelemetry(msg string) {
+	select {
+	case s.telemetryBuffer <- msg:
+	default:
+		s.logger.Warn("telemetry buffer full, dropping message")
+	}
+}
+
+// runTelemetryFlusher processes periodically batches telemetry events and sends them via Chat API.
+func (s *Server) runTelemetryFlusher(ctx context.Context) {
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+
+	var batch []string
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case msg := <-s.telemetryBuffer:
+			batch = append(batch, msg)
+		case <-ticker.C:
+			if len(batch) > 0 {
+				digest := "🔔 *System Telemetry Digest*\n"
+				for _, m := range batch {
+					digest += "- " + m + "\n"
+				}
+				err := s.ws.SendDirectMessage(s.user.Email, digest)
+				if err != nil {
+					s.logger.Error("failed to send telemetry dm", "error", err)
+				}
+				batch = nil // clear batch
+			}
+		}
+	}
 }
 
 // runPoller processes periodic refreshes for AUTO mode.
@@ -604,6 +645,10 @@ func (s *Server) handleMode(w http.ResponseWriter, r *http.Request) {
 	s.mode = newMode
 	s.modeMu.Unlock()
 
+	if newMode == "MANUAL" {
+		s.bufferTelemetry(fmt.Sprintf("Operational mode critically overridden to MANUAL by ui"))
+	}
+
 	s.triggerStateSnapshot()
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(ModeResponse{Mode: newMode})
@@ -661,6 +706,10 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	title := s.getItemTitle(id)
 	if title != "" {
 		s.broadcastStatusChange(id, status, title)
+		
+		if status == "Error" {
+			s.bufferTelemetry(fmt.Sprintf("Item %s ('%s') transitioned to Error state", id, title))
+		}
 	}
 
 	s.triggerStateSnapshot()

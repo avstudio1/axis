@@ -22,6 +22,7 @@ import (
 	docs "google.golang.org/api/docs/v1"
 	drive "google.golang.org/api/drive/v3"
 	gmail "google.golang.org/api/gmail/v1"
+	chat "google.golang.org/api/chat/v1"
 	"google.golang.org/api/impersonate"
 	keep "google.golang.org/api/keep/v1"
 	"google.golang.org/api/option"
@@ -59,6 +60,8 @@ func main() {
 			sheets.SpreadsheetsScope,
 			drive.DriveReadonlyScope,
 			gmail.GmailModifyScope,
+			"https://www.googleapis.com/auth/chat.messages.create",
+			"https://www.googleapis.com/auth/chat.spaces.create",
 		},
 	})
 	if err != nil {
@@ -96,8 +99,13 @@ func main() {
 		log.Fatalf("Failed to create Gmail service: %v", err)
 	}
 
+	chatSvc, err := chat.NewService(ctx, option.WithTokenSource(ts))
+	if err != nil {
+		log.Fatalf("Failed to create Chat service: %v", err)
+	}
+
 	// 5. Initialize internal workspace wrapper
-	ws := workspace.NewService(adminSvc, keepSvc, docsSvc, sheetsSvc, driveSvc, gmailSvc)
+	ws := workspace.NewService(adminSvc, keepSvc, docsSvc, sheetsSvc, driveSvc, gmailSvc, chatSvc)
 
 	// 6. Verification check
 	user, err := ws.GetUser(userEmail)
