@@ -15,6 +15,7 @@ import (
 	"testing"
 
 	admin "google.golang.org/api/admin/directory/v1"
+	chat "google.golang.org/api/chat/v1"
 	docs "google.golang.org/api/docs/v1"
 	drive "google.golang.org/api/drive/v3"
 	gmail "google.golang.org/api/gmail/v1"
@@ -30,8 +31,9 @@ func TestNewService(t *testing.T) {
 	sheetsSvc := &sheets.Service{}
 	driveSvc := &drive.Service{}
 	gmailSvc := &gmail.Service{}
+	chatSvc := &chat.Service{}
 
-	ws := NewService(adminSvc, keepSvc, docsSvc, sheetsSvc, driveSvc, gmailSvc)
+	ws := NewService(adminSvc, keepSvc, docsSvc, sheetsSvc, driveSvc, gmailSvc, chatSvc)
 
 	if ws.adminService != adminSvc {
 		t.Error("Admin service not correctly assigned")
@@ -50,6 +52,9 @@ func TestNewService(t *testing.T) {
 	}
 	if ws.gmailService != gmailSvc {
 		t.Error("Gmail service not correctly assigned")
+	}
+	if ws.chatService != chatSvc {
+		t.Error("Chat service not correctly assigned")
 	}
 }
 
@@ -77,7 +82,7 @@ func TestListRegistryItems(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ws := NewService(nil, keepSvc, nil, nil, driveSvc, nil)
+	ws := NewService(nil, keepSvc, nil, nil, driveSvc, nil, nil)
 	items, err := ws.ListRegistryItems()
 	if err != nil {
 		t.Fatal(err)
