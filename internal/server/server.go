@@ -76,6 +76,8 @@ type Server struct {
 	clients   map[chan SSEMessage]bool
 	clientsMu sync.Mutex
 	logger    *slog.Logger
+
+	telemetryBuffer chan string
 }
 
 // UserResponse provides minimal operator context for the UI.
@@ -101,13 +103,14 @@ func NewServer(ws *workspace.Service, user *workspace.User) *Server {
 	}
 
 	s := &Server{
-		ws:       ws,
-		db:       db,
-		user:     user,
-		mode:     "AUTO",
-		statuses: make(map[string]string),
-		clients:  make(map[chan SSEMessage]bool),
-		logger:   logger,
+		ws:              ws,
+		db:              db,
+		user:            user,
+		mode:            "AUTO",
+		statuses:        make(map[string]string),
+		clients:         make(map[chan SSEMessage]bool),
+		logger:          logger,
+		telemetryBuffer: make(chan string, 100),
 	}
 	s.loadState()
 	return s
@@ -202,7 +205,8 @@ func (s *Server) Start(port string) error {
 	mux.HandleFunc("/api/gmail/detail", s.handleGetGmailThread)
 	mux.HandleFunc("/api/gmail/delete", s.handleDeleteGmailThread)
 	mux.HandleFunc("/api/registry", s.handleRegistry)
-	mux.HandleFunc("/api/status", s.handleStatus)
+	// Google Chat Webhook
+	mux.HandleFunc("/api/chat/webhook", s.handleChatWebhook)
 
 	// SSE Endpoint
 	mux.HandleFunc("/api/events", s.handleEvents)
@@ -215,9 +219,47 @@ func (s *Server) Start(port string) error {
 	defer cancel()
 
 	go s.runPoller(ctx)
+	go s.runTelemetryFlusher(ctx)
 
 	s.logger.Info("axis server active", "port", port, "sse", true)
 	return http.ListenAndServe(":"+port, mux)
+}
+
+func (s *Server) bufferTelemetry(msg string) {
+	select {
+	case s.telemetryBuffer <- msg:
+	default:
+		s.logger.Warn("telemetry buffer full, dropping message")
+	}
+}
+
+// runTelemetryFlusher processes periodically batches telemetry events and sends them via Chat API.
+func (s *Server) runTelemetryFlusher(ctx context.Context) {
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+
+	var batch []string
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case msg := <-s.telemetryBuffer:
+			batch = append(batch, msg)
+		case <-ticker.C:
+			if len(batch) > 0 {
+				digest := "🔔 *System Telemetry Digest*\n"
+				for _, m := range batch {
+					digest += "- " + m + "\n"
+				}
+				err := s.ws.SendDirectMessage(s.user.Email, digest)
+				if err != nil {
+					s.logger.Error("failed to send telemetry dm", "error", err)
+				}
+				batch = nil // clear batch
+			}
+		}
+	}
 }
 
 // runPoller processes periodic refreshes for AUTO mode.
@@ -604,6 +646,10 @@ func (s *Server) handleMode(w http.ResponseWriter, r *http.Request) {
 	s.mode = newMode
 	s.modeMu.Unlock()
 
+	if newMode == "MANUAL" {
+		s.bufferTelemetry(fmt.Sprintf("Operational mode critically overridden to MANUAL by ui"))
+	}
+
 	s.triggerStateSnapshot()
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(ModeResponse{Mode: newMode})
@@ -661,6 +707,10 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	title := s.getItemTitle(id)
 	if title != "" {
 		s.broadcastStatusChange(id, status, title)
+
+		if status == "Error" {
+			s.bufferTelemetry(fmt.Sprintf("Item %s ('%s') transitioned to Error state", id, title))
+		}
 	}
 
 	s.triggerStateSnapshot()
@@ -883,4 +933,60 @@ func (s *Server) sendInitialRegistrySnapshot(ch chan<- SSEMessage) {
 func (s *Server) refreshAndBroadcast() {
 	s.refreshRegistryCache()
 	s.broadcastRegistry()
+}
+
+// ChatEvent represents the inbound payload from Google Chat.
+type ChatEvent struct {
+	Type    string `json:"type"`
+	Message struct {
+		Text string `json:"text"`
+	} `json:"message"`
+	Space struct {
+		Name string `json:"name"`
+	} `json:"space"`
+	User struct {
+		Name        string `json:"name"`
+		DisplayName string `json:"displayName"`
+	} `json:"user"`
+}
+
+// handleChatWebhook receives and processes events from Google Chat API.
+func (s *Server) handleChatWebhook(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var event ChatEvent
+	if err := json.NewDecoder(r.Body).Decode(&event); err != nil {
+		s.logger.Error("failed to decode chat event", "error", err)
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+
+	s.logger.Info("received chat event", "type", event.Type, "user", event.User.DisplayName)
+
+	var response map[string]string
+
+	switch event.Type {
+	case "ADDED_TO_SPACE":
+		response = map[string]string{"text": "Hello! I am Axis Mundi. I am ready to assist."}
+	case "MESSAGE":
+		// Simple echo or acknowledgment logic.
+		replyText := fmt.Sprintf("Axis Mundi received your message: %s", event.Message.Text)
+		response = map[string]string{"text": replyText}
+	case "REMOVED_FROM_SPACE":
+		// We don't need to reply when removed.
+		w.WriteHeader(http.StatusOK)
+		return
+	default:
+		s.logger.Warn("unknown chat event type", "type", event.Type)
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(response); err != nil {
+		s.logger.Error("failed to encode chat response", "error", err)
+	}
 }

@@ -1,10 +1,10 @@
 module axis
 
-go 1.24.2
+go 1.25.0
 
 require (
 	github.com/joho/godotenv v1.5.1
-	google.golang.org/api v0.266.0
+	google.golang.org/api v0.268.0
 	modernc.org/sqlite v1.46.1
 )
 
